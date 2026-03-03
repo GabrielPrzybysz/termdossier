@@ -1,0 +1,6 @@
+# Binary
+/termdossier
+
+# Go test artifacts
+*.test
+*.out
