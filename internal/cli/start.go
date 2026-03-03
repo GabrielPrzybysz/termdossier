@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ var startCmd = &cobra.Command{
 	Short: "Start a new recording session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		model, _ := cmd.Flags().GetString("model")
+		maxDuration, _ := cmd.Flags().GetDuration("max-duration")
 
 		meta, err := session.Create(model)
 		if err != nil {
@@ -28,7 +30,7 @@ var startCmd = &cobra.Command{
 			return fmt.Errorf("resolve binary path: %w", err)
 		}
 
-		if err := capture.Start(meta.SessionID, session.Dir(meta.SessionID), binaryPath); err != nil {
+		if err := capture.Start(meta.SessionID, session.Dir(meta.SessionID), binaryPath, maxDuration); err != nil {
 			return fmt.Errorf("capture: %w", err)
 		}
 
@@ -39,4 +41,5 @@ var startCmd = &cobra.Command{
 
 func init() {
 	startCmd.Flags().String("model", "llama3", "Ollama model to use for report generation")
+	startCmd.Flags().Duration("max-duration", 8*time.Hour, "Auto-stop session after this duration (0 to disable)")
 }
