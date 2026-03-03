@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/term"
 
+	"github.com/perxibes/termdossier/internal/cache"
 	"github.com/perxibes/termdossier/internal/session"
 	"github.com/perxibes/termdossier/internal/store"
 )
@@ -297,7 +298,8 @@ func (pc *ptyCapture) handleMarker(content []byte) {
 			DurationMS: duration,
 		}
 
-		go store.AppendEvent(pc.sessionID, event) //nolint
+		go store.AppendEvent(pc.sessionID, event)     //nolint
+		go cache.ProcessAndCache(pc.sessionID, event) //nolint
 
 		pc.captureBuf.Reset()
 	}
