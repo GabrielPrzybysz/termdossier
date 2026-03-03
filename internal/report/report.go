@@ -22,7 +22,7 @@ Session metadata:
 - Started at: {{ .StartedAt }}
 - Total commands: {{ .CommandCount }}
 
-Commands executed (format: [exit_code | duration_ms | cwd] command):
+Commands executed (format: #seq [exit_code | duration_ms | cwd] command — lines prefixed with ! indicate failure):
 {{ .CommandList }}
 
 Generate a structured technical report in Markdown with the following sections:
@@ -89,8 +89,13 @@ func Generate(provider llm.Provider, meta *session.Meta, events []store.Event, c
 
 func buildCommandList(events []store.Event) string {
 	var sb strings.Builder
-	for _, e := range events {
-		sb.WriteString(fmt.Sprintf("[%d | %dms | %s] %s\n", e.ExitCode, e.DurationMS, e.CWD, e.Stdin))
+	for i, e := range events {
+		marker := " "
+		if e.ExitCode != 0 {
+			marker = "!"
+		}
+		sb.WriteString(fmt.Sprintf("#%d %s[%d | %dms | %s] %s\n",
+			i+1, marker, e.ExitCode, e.DurationMS, e.CWD, e.Stdin))
 	}
 	return sb.String()
 }
