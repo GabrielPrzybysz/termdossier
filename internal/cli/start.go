@@ -35,6 +35,6 @@ var startCmd = &cobra.Command{
 }
 
 func init() {
-	startCmd.Flags().String("model", "llama3", "Ollama model to use for report generation")
+	startCmd.Flags().String("model", "mistral", "Ollama model to use for report generation")
 	startCmd.Flags().Duration("max-duration", 8*time.Hour, "Auto-stop session after this duration (0 to disable)")
 }
