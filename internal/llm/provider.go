@@ -8,4 +8,6 @@ type Provider interface {
 	EnsureModel(model string) error
 	// Generate sends a system prompt and user prompt, returns the full response.
 	Generate(system, user string) (string, error)
+	// Shutdown unloads the model and stops the backend if it was started by us.
+	Shutdown()
 }

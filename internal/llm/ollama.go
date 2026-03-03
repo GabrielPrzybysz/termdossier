@@ -18,8 +18,9 @@ const ollamaBase = "http://localhost:11434"
 
 // Ollama implements Provider against a local Ollama instance.
 type Ollama struct {
-	model  string
-	client *http.Client
+	model     string
+	client    *http.Client
+	daemonPID int // non-zero if we started the daemon ourselves
 }
 
 // NewOllama creates an Ollama provider and ensures the daemon and model are ready.
@@ -47,9 +48,12 @@ func (o *Ollama) EnsureRunning() error {
 
 	fmt.Println("Ollama not running — starting it...")
 	cmd := exec.Command("ollama", "serve")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ollama: %w", err)
 	}
+	o.daemonPID = cmd.Process.Pid
 
 	// Wait up to 10 s for Ollama to become ready.
 	for range 20 {
@@ -241,4 +245,25 @@ func (o *Ollama) hasModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// Shutdown unloads the model from Ollama and kills the daemon if we started it.
+func (o *Ollama) Shutdown() {
+	// Force-unload the model by sending a generate request with keep_alive=0.
+	body, _ := json.Marshal(map[string]any{
+		"model":      o.model,
+		"keep_alive": 0,
+	})
+	resp, err := o.client.Post(ollamaBase+"/api/generate", "application/json", bytes.NewReader(body))
+	if err == nil {
+		io.Copy(io.Discard, resp.Body) //nolint
+		resp.Body.Close()
+	}
+
+	// If we started the daemon, kill it.
+	if o.daemonPID != 0 {
+		if proc, err := os.FindProcess(o.daemonPID); err == nil {
+			proc.Signal(os.Interrupt)
+		}
+	}
 }

@@ -48,6 +48,7 @@ var reportCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("init LLM: %w", err)
 		}
+		defer provider.Shutdown()
 
 		output, err := report.Generate(provider, meta, events, context)
 		if err != nil {
