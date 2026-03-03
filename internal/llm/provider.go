@@ -6,6 +6,6 @@ type Provider interface {
 	EnsureRunning() error
 	// EnsureModel makes sure the model is available locally, pulling if needed.
 	EnsureModel(model string) error
-	// Generate sends a prompt and returns the full response.
-	Generate(prompt string) (string, error)
+	// Generate sends a system prompt and user prompt, returns the full response.
+	Generate(system, user string) (string, error)
 }

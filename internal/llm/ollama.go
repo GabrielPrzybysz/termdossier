@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,8 +25,10 @@ type Ollama struct {
 // NewOllama creates an Ollama provider and ensures the daemon and model are ready.
 func NewOllama(model string) (*Ollama, error) {
 	o := &Ollama{
-		model:  model,
-		client: &http.Client{Timeout: 5 * time.Minute},
+		model: model,
+		// No global timeout — streaming responses can take arbitrarily long.
+		// Per-request timeouts are handled at the request level where needed.
+		client: &http.Client{},
 	}
 	if err := o.EnsureRunning(); err != nil {
 		return nil, err
@@ -77,36 +83,131 @@ func (o *Ollama) EnsureModel(model string) error {
 	return nil
 }
 
-// Generate sends prompt to Ollama and returns the response text.
-func (o *Ollama) Generate(prompt string) (string, error) {
+// Generate sends system and user prompts to Ollama via the chat API and returns the full response text.
+func (o *Ollama) Generate(system, user string) (string, error) {
+	type message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
 	body := map[string]any{
-		"model":  o.model,
-		"prompt": prompt,
-		"stream": false,
+		"model": o.model,
+		"messages": []message{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		"stream":     true,
+		"keep_alive": 0,
+		"options": map[string]any{
+			"temperature": 0.3,
+		},
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := o.client.Post(ollamaBase+"/api/generate", "application/json", bytes.NewReader(b))
-	if err != nil {
-		return "", fmt.Errorf("ollama generate: %w", err)
+	// Start progress spinner before the request so model-loading time is visible.
+	start := time.Now()
+	var tokens atomic.Int64
+	phase := "Waiting for LLM"
+	var phaseMu sync.Mutex
+	stop := make(chan struct{})
+	go func() {
+		spin := [4]string{"|", "/", "-", "\\"}
+		i := 0
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				elapsed := time.Since(start).Truncate(time.Second)
+				phaseMu.Lock()
+				p := phase
+				phaseMu.Unlock()
+				tok := tokens.Load()
+				if tok > 0 {
+					fmt.Fprintf(os.Stderr, "\r  %s %s... %v elapsed, %d tokens",
+						spin[i%4], p, elapsed, tok)
+				} else {
+					fmt.Fprintf(os.Stderr, "\r  %s %s... %v elapsed",
+						spin[i%4], p, elapsed)
+				}
+				i++
+			}
+		}
+	}()
+
+	// stopSpinner is a helper to cleanly stop the spinner goroutine.
+	stopSpinner := func() {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+	}
+
+	// Retry up to 2 times on transient errors (e.g. Ollama 500 during model reload).
+	const maxRetries = 2
+	var resp *http.Response
+	for attempt := range maxRetries + 1 {
+		resp, err = o.client.Post(ollamaBase+"/api/chat", "application/json", bytes.NewReader(b))
+		if err != nil {
+			stopSpinner()
+			fmt.Fprintf(os.Stderr, "\n")
+			return "", fmt.Errorf("ollama chat: %w", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if attempt < maxRetries {
+			fmt.Fprintf(os.Stderr, "\r  Ollama returned HTTP %d, retrying (%d/%d)...                    \n",
+				resp.StatusCode, attempt+1, maxRetries)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		stopSpinner()
+		fmt.Fprintf(os.Stderr, "\n")
+		return "", fmt.Errorf("ollama chat HTTP %d: %s", resp.StatusCode, errBody)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ollama generate HTTP %d: %s", resp.StatusCode, body)
+	phaseMu.Lock()
+	phase = "Generating"
+	phaseMu.Unlock()
+
+	// Read NDJSON stream, concatenating response fragments.
+	// Chat API returns {"message":{"content":"..."},"done":false} per chunk.
+	var full strings.Builder
+	dec := json.NewDecoder(resp.Body)
+	for dec.More() {
+		var chunk struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Done bool `json:"done"`
+		}
+		if err := dec.Decode(&chunk); err != nil {
+			stopSpinner()
+			fmt.Fprintf(os.Stderr, "\n")
+			return "", fmt.Errorf("decode stream chunk: %w", err)
+		}
+		full.WriteString(chunk.Message.Content)
+		tokens.Add(1)
+		if chunk.Done {
+			break
+		}
 	}
 
-	var result struct {
-		Response string `json:"response"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	return result.Response, nil
+	stopSpinner()
+	elapsed := time.Since(start).Truncate(time.Second)
+	// Clear the spinner line and print final summary.
+	fmt.Fprintf(os.Stderr, "\r  Done: %d tokens in %v                              \n", tokens.Load(), elapsed)
+
+	return full.String(), nil
 }
 
 func (o *Ollama) ping() bool {

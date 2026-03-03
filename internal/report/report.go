@@ -13,9 +13,27 @@ import (
 	"github.com/perxibes/termdossier/internal/store"
 )
 
-const promptTemplate = `You are a technical writer generating a professional report from a recorded terminal session.
+const systemPrompt = `You are a technical writer generating a professional report from a recorded terminal session.
 
-Context provided by the operator: {{ .Context }}
+Rules:
+- Be concise and professional.
+- Explain what each significant command does and why it matters.
+- Flag any failed commands (non-zero exit codes).
+- Note security-relevant operations.
+- ONLY describe commands that appear in the provided list. Do not invent output, files, or results that were not recorded.
+- If you are unsure about the effect of a command, say so instead of guessing.
+
+Generate a structured technical report in Markdown with the following sections:
+# Technical Report
+## Context
+## Executive Summary
+## Timeline of Actions
+## Detailed Command Analysis
+## Observations
+## Security Considerations
+## Conclusion`
+
+const userTemplate = `Context provided by the operator: {{ .Context }}
 
 Session metadata:
 - Session ID: {{ .SessionID }}
@@ -23,26 +41,7 @@ Session metadata:
 - Total commands: {{ .CommandCount }}
 
 Commands executed (format: #seq [exit_code | duration_ms | cwd] command — lines prefixed with ! indicate failure):
-{{ .CommandList }}
-
-Generate a structured technical report in Markdown with the following sections:
-# Technical Report
-
-## Context
-## Executive Summary
-## Timeline of Actions
-## Detailed Command Analysis
-## Observations
-## Security Considerations
-## Conclusion
-
-Rules:
-- Be concise and professional.
-- Explain what each significant command does and why it matters.
-- Flag any failed commands (non-zero exit codes).
-- Note security-relevant operations.
-- Do not fabricate output that wasn't recorded.
-`
+{{ .CommandList }}`
 
 // Generate builds a markdown report and writes it to the session directory.
 // Returns the output path.
@@ -53,7 +52,7 @@ func Generate(provider llm.Provider, meta *session.Meta, events []store.Event, c
 
 	cmdLines := buildCommandList(events)
 
-	tmpl, err := template.New("prompt").Parse(promptTemplate)
+	tmpl, err := template.New("user").Parse(userTemplate)
 	if err != nil {
 		return "", err
 	}
@@ -70,7 +69,7 @@ func Generate(provider llm.Provider, meta *session.Meta, events []store.Event, c
 		return "", fmt.Errorf("build prompt: %w", err)
 	}
 
-	response, err := provider.Generate(buf.String())
+	response, err := provider.Generate(systemPrompt, buf.String())
 	if err != nil {
 		return "", fmt.Errorf("LLM generate: %w", err)
 	}
